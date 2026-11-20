@@ -66,6 +66,42 @@ function validate({ name, email, message }) {
   return errors;
 }
 
+// The API runs on serverless functions, so the first request after an idle spell can hit a
+// cold start and fail with a network error or a gateway 5xx (plain text, not our JSON).
+// Those are retried once automatically; real answers from the API (JSON) never are.
+const CONTACT_TIMEOUT_MS = 20000;
+
+async function postOnce(body) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), CONTACT_TIMEOUT_MS);
+  try {
+    return await fetch(`${API_URL}/api/contact`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body,
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function isTransient(res) {
+  const fromApi = (res.headers.get("content-type") || "").includes("application/json");
+  return [500, 502, 503, 504].includes(res.status) && !fromApi;
+}
+
+async function postContact(body) {
+  try {
+    const res = await postOnce(body);
+    if (!isTransient(res)) return res;
+  } catch (err) {
+    if (!(err instanceof TypeError) && err?.name !== "AbortError") throw err;
+  }
+  await new Promise((r) => setTimeout(r, 1500));
+  return postOnce(body);
+}
+
 // ------------------------------------------------------------
 // Header theme follows the section underneath (night or paper)
 // ------------------------------------------------------------
@@ -196,18 +232,15 @@ export default function ContactPage() {
     }
     setStatus({ state: "sending", error: "" });
     sfx.send();
+    const body = JSON.stringify({
+      name: form.name.trim(),
+      email: form.email.trim(),
+      message: form.message.trim(),
+      mission: mission?.name ?? null,
+      website: form.website,
+    });
     try {
-      const res = await fetch(`${API_URL}/api/contact`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: form.name.trim(),
-          email: form.email.trim(),
-          message: form.message.trim(),
-          mission: mission?.name ?? null,
-          website: form.website,
-        }),
-      });
+      const res = await postContact(body);
       if (!res.ok) {
         // Only show the server's own wording for the cases it writes for visitors;
         // anything else (404, 500, proxy errors) gets one plain fallback.
@@ -223,13 +256,21 @@ export default function ContactPage() {
         if (res.status === 422) detail = "Some fields need another look. Check your name, email and message.";
         throw new Error(detail || "The message service isn't reachable right now. Please email me directly.");
       }
-      setStatus({ state: "sent", error: "" });
+    } catch (err) {
+      // Network failures and timeouts throw browser errors ("Failed to fetch", AbortError);
+      // never show that raw text.
+      const friendly = err instanceof TypeError || err?.name === "AbortError" ? "" : err.message;
+      setStatus({ state: "error", error: friendly || "The message service isn't reachable right now. Please email me directly." });
+      return;
+    }
+    // Outside the try: a sound or achievement-toast hiccup must never turn a delivered
+    // message into an error.
+    setStatus({ state: "sent", error: "" });
+    try {
       sfx.chime();
       unlock("signal");
-    } catch (err) {
-      // A network failure throws a browser TypeError ("Failed to fetch"); never show that raw text.
-      const friendly = err instanceof TypeError ? "" : err.message;
-      setStatus({ state: "error", error: friendly || "The message service isn't reachable right now. Please email me directly." });
+    } catch {
+      /* cosmetic only */
     }
   }
 

@@ -393,8 +393,12 @@ def ensure_loaded() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await asyncio.to_thread(ensure_loaded)
+    # Warm up in the background instead of blocking startup. On a cold start, blocking here
+    # made the first request (often a contact-form message) wait on the PDF read and GitHub
+    # calls and sometimes fail. Endpoints that need the data call ensure_loaded() themselves.
+    warmup = asyncio.create_task(asyncio.to_thread(ensure_loaded))
     yield
+    warmup.cancel()
 
 
 app = FastAPI(
