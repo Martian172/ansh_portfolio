@@ -2,7 +2,7 @@
 
 <img src="frontend-ui/public/favicon.svg" width="72" alt="Ansh Singh logo" />
 
-# HireMe AI · Ansh Singh's Portfolio
+#  · Ansh's Portfolio
 
 **An interactive, game-themed portfolio with a resume-grounded AI twin that recruiters can interview.**
 
